@@ -3,10 +3,13 @@ AI智能回复过滤器插件 (AI Reply Filter)
 
 通过调用AI模型分析每条消息，智能判断是否需要回复。
 支持私聊/群聊独立配置，可设置群组白名单/黑名单过滤。
+**v1.1新增**: 自动读取频道人设和聊天记录上下文！
 
 ## 主要功能
 
 - **AI智能判断**: 使用AI模型分析消息内容，决定是否需要回复
+- **自动人设识别**: 自动从数据库读取频道配置的人设，无需手动配置
+- **智能上下文感知**: 自动获取历史聊天记录，理解对话连贯性
 - **私聊/群聊独立控制**: 可分别为私聊和群聊设置不同的过滤规则
 - **群组过滤**: 支持群组白名单和黑名单，精确控制生效范围
 - **自定义提示词**: 可自定义AI判断的系统提示词
@@ -25,6 +28,8 @@ AI智能回复过滤器插件 (AI Reply Filter)
 - **群组ID列表**: 白名单或黑名单的群组ID列表
 
 ### 3. AI判断配置
+- **自动使用频道人设**: 是否自动读取频道配置的人设（推荐开启）
+- **上下文消息数量**: 判断时包含的历史消息数量（建议5-10条）
 - **系统提示词**: 指导AI如何判断消息是否需要回复
 - **判断超时时间**: AI分析的超时时间（秒）
 - **阻止模式**: 0=完全阻止且不保存记录，1=阻止AI响应但保存记录
@@ -35,20 +40,28 @@ AI智能回复过滤器插件 (AI Reply Filter)
 - AI自动判断"嗯"、"好的"等简短消息不需要回复
 - 只对有实质内容的消息进行回复
 
-### 场景2: 群组精准控制
+### 场景2: 根据人设过滤
+- 插件自动读取频道配置的人设
+- AI根据人设判断消息是否符合回复范围
+- 例如：编程助手人设只回复编程相关问题
+
+### 场景3: 群组精准控制
 - 只在指定的几个群组中启用AI过滤
 - 排除某些测试群组或不需要过滤的群组
 
-### 场景3: 上下文相关性判断
-- AI判断消息是否与当前对话主题相关
+### 场景4: 上下文相关性判断
+- AI自动读取最近的对话历史
+- 判断消息是否与当前对话主题相关
 - 过滤掉无关的插话或闲聊
 
 ## 工作原理
 
 1. **消息拦截**: 通过用户消息回调拦截所有消息
 2. **范围检查**: 检查频道类型和群组是否在过滤范围内
-3. **AI分析**: 调用AI模型分析消息内容
-4. **决策执行**: 根据AI返回结果决定是否允许触发回复
+3. **人设读取**: 自动从数据库读取频道关联的人设（如果有）
+4. **上下文获取**: 自动获取最近N条聊天记录作为上下文
+5. **AI分析**: 调用AI模型分析消息内容
+6. **决策执行**: 根据AI返回结果决定是否允许触发回复
 """
 
 import json
@@ -63,6 +76,8 @@ from nekro_agent.api.message import ChatMessage
 from nekro_agent.api.schemas import AgentCtx
 from nekro_agent.api.signal import MsgSignal
 from nekro_agent.models.db_chat_message import DBChatMessage
+from nekro_agent.models.db_chat_channel import DBChatChannel
+from nekro_agent.models.db_preset import DBPreset
 from nekro_agent.services.agent.openai import gen_openai_chat_response
 from nekro_agent.services.plugin.base import NekroPlugin, ConfigBase
 
@@ -70,8 +85,8 @@ from nekro_agent.services.plugin.base import NekroPlugin, ConfigBase
 plugin = NekroPlugin(
     name="AI智能回复过滤器",
     module_name="ai_reply_filter",
-    description="通过AI模型智能分析消息内容，判断是否需要触发回复。支持私聊/群聊独立配置和群组过滤。",
-    version="1.0.0",
+    description="通过AI模型智能分析消息内容，判断是否需要触发回复。支持自动读取频道人设和聊天记录，私聊/群聊独立配置，群组过滤。",
+    version="1.1.0",
     author="小九",
     url="https://github.com/miuzhaii/ai_reply_filter",
     support_adapter=["onebot_v11", "discord", "telegram", "wechatpad", "wxwork"],
@@ -118,10 +133,10 @@ class AIReplyFilterConfig(ConfigBase):
     )
 
     # AI判断配置
-    PERSONA_CONTEXT: str = Field(
-        default="",
-        title="AI助手人设上下文",
-        description="描述AI助手的人设、性格、角色定位等信息。AI会根据人设判断哪些消息符合其回复风格。留空则使用默认判断逻辑。",
+    AUTO_USE_PRESET: bool = Field(
+        default=True,
+        title="自动使用频道人设",
+        description="是否自动从数据库读取当前频道关联的人设信息。启用后，AI会根据频道配置的人设来判断是否需要回复。",
     )
 
     SYSTEM_PROMPT: str = Field(
@@ -135,9 +150,9 @@ class AIReplyFilterConfig(ConfigBase):
     )
 
     CONTEXT_MESSAGE_COUNT: int = Field(
-        default=0,
+        default=5,
         title="上下文消息数量",
-        description="判断时包含的历史消息数量。0=不使用上下文，1-10=包含最近N条消息。带上上下文可以让AI更好地理解对话连贯性。",
+        description="判断时包含的历史消息数量。0=不使用上下文，1-20=包含最近N条消息。建议值：5-10条。带上上下文可以让AI更好地理解对话连贯性。",
     )
 
     AI_TIMEOUT: int = Field(
@@ -286,6 +301,45 @@ def format_context_messages(messages: List[DBChatMessage]) -> str:
 # endregion: 上下文消息获取
 
 
+# region: 人设获取
+
+async def get_channel_preset(chat_key: str) -> Optional[DBPreset]:
+    """
+    获取频道关联的人设信息
+
+    Args:
+        chat_key: 聊天频道标识
+
+    Returns:
+        Optional[DBPreset]: 人设对象，如果未找到则返回 None
+    """
+    if not config.AUTO_USE_PRESET:
+        return None
+
+    try:
+        # 获取频道信息
+        channel = await DBChatChannel.get_or_none(chat_key=chat_key)
+        if not channel or not channel.preset_id:
+            core.logger.debug(f"[AI回复过滤器] 频道 {chat_key} 未配置人设")
+            return None
+
+        # 获取人设信息
+        preset = await DBPreset.get_or_none(id=channel.preset_id)
+        if preset:
+            core.logger.info(f"[AI回复过滤器] 使用频道人设: {preset.name}")
+        else:
+            core.logger.warning(f"[AI回复过滤器] 人设ID {channel.preset_id} 不存在")
+
+        return preset
+
+    except Exception as e:
+        core.logger.error(f"[AI回复过滤器] 获取频道人设失败: {e}")
+        return None
+
+
+# endregion: 人设获取
+
+
 # region: AI判断逻辑
 
 async def ai_should_reply(message_text: str, chat_key: str = "") -> bool:
@@ -315,6 +369,15 @@ async def ai_should_reply(message_text: str, chat_key: str = "") -> bool:
         # 调用AI进行判断
         core.logger.info(f"[AI回复过滤器] 调用AI分析消息: {message_text[:50]}...")
 
+        # 获取频道人设（如果启用）
+        preset = None
+        preset_text = ""
+        if chat_key:
+            preset = await get_channel_preset(chat_key)
+            if preset:
+                preset_text = f"{preset.content}"
+                core.logger.debug(f"[AI回复过滤器] 使用频道人设: {preset.name}")
+
         # 获取历史消息上下文
         context_text = ""
         if config.CONTEXT_MESSAGE_COUNT > 0 and chat_key:
@@ -327,9 +390,9 @@ async def ai_should_reply(message_text: str, chat_key: str = "") -> bool:
         user_message_parts = []
 
         # 1. 添加人设信息（如果有）
-        if config.PERSONA_CONTEXT.strip():
-            user_message_parts.append(f"AI助手人设信息:\n{config.PERSONA_CONTEXT.strip()}")
-            core.logger.debug(f"[AI回复过滤器] 使用人设上下文进行判断")
+        if preset_text:
+            user_message_parts.append(f"AI助手人设信息:\n{preset_text}")
+            core.logger.debug(f"[AI回复过滤器] 使用自动获取的人设进行判断")
 
         # 2. 添加历史消息上下文（如果有）
         if context_text:
@@ -339,9 +402,9 @@ async def ai_should_reply(message_text: str, chat_key: str = "") -> bool:
         user_message_parts.append(f"当前消息: {message_text}")
 
         # 4. 添加判断提示
-        if config.PERSONA_CONTEXT.strip() or context_text:
+        if preset_text or context_text:
             prompt_parts = []
-            if config.PERSONA_CONTEXT.strip():
+            if preset_text:
                 prompt_parts.append("人设信息")
             if context_text:
                 prompt_parts.append("对话上下文")
