@@ -73,7 +73,7 @@ plugin = NekroPlugin(
     description="通过AI模型智能分析消息内容，判断是否需要触发回复。支持私聊/群聊独立配置和群组过滤。",
     version="1.0.0",
     author="小九",
-    url="https://github.com/yourusername/ai-reply-filter",
+    url="https://github.com/miuzhaii/ai_reply_filter",
     support_adapter=["onebot_v11", "discord", "telegram", "wechatpad", "wxwork"],
 )
 
