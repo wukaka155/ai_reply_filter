@@ -3,7 +3,7 @@ AI智能回复过滤器插件 (AI Reply Filter)
 
 通过调用AI模型分析每条消息，智能判断是否需要回复。
 支持私聊/群聊独立配置，可设置群组白名单/黑名单过滤。
-**v1.1新增**: 自动读取频道人设和聊天记录上下文！
+**v1.2优化**: 精简配置项，更易用！
 
 ## 主要功能
 
@@ -13,8 +13,7 @@ AI智能回复过滤器插件 (AI Reply Filter)
 - **私聊/群聊独立控制**: 可分别为私聊和群聊设置不同的过滤规则
 - **群组过滤**: 支持群组白名单和黑名单，精确控制生效范围
 - **自定义提示词**: 可自定义AI判断的系统提示词
-- **灵活阻止模式**: 可选择是否保存被过滤的消息记录
-- **智能缓存**: 缓存AI判断结果，减少重复调用
+- **智能缓存**: 自动缓存AI判断结果，减少重复调用
 
 ## 配置说明
 
@@ -31,8 +30,6 @@ AI智能回复过滤器插件 (AI Reply Filter)
 - **自动使用频道人设**: 是否自动读取频道配置的人设（推荐开启）
 - **上下文消息数量**: 判断时包含的历史消息数量（建议5-10条）
 - **系统提示词**: 指导AI如何判断消息是否需要回复
-- **判断超时时间**: AI分析的超时时间（秒）
-- **阻止模式**: 0=完全阻止且不保存记录，1=阻止AI响应但保存记录
 
 ## 使用场景
 
@@ -86,7 +83,7 @@ plugin = NekroPlugin(
     name="AI智能回复过滤器",
     module_name="ai_reply_filter",
     description="通过AI模型智能分析消息内容，判断是否需要触发回复。支持自动读取频道人设和聊天记录，私聊/群聊独立配置，群组过滤。",
-    version="1.1.0",
+    version="1.2.0",
     author="小九",
     url="https://github.com/miuzhaii/ai_reply_filter",
     support_adapter=["onebot_v11", "discord", "telegram", "wechatpad", "wxwork"],
@@ -155,45 +152,22 @@ class AIReplyFilterConfig(ConfigBase):
         description="判断时包含的历史消息数量。0=不使用上下文，1-20=包含最近N条消息。建议值：5-10条。带上上下文可以让AI更好地理解对话连贯性。",
     )
 
-    AI_TIMEOUT: int = Field(
-        default=10,
-        title="AI判断超时时间（秒）",
-        description="调用AI分析的最长等待时间，超时则默认放行消息",
-    )
-
-    # 阻止模式配置
-    BLOCK_MODE: int = Field(
-        default=1,
-        title="阻止模式",
-        description="当AI判断不需要回复时的处理方式：0=完全阻止且不保存记录，1=阻止AI响应但保存记录",
-    )
-
-    # 缓存配置
-    ENABLE_CACHE: bool = Field(
-        default=True,
-        title="启用结果缓存",
-        description="是否缓存相同消息的AI判断结果（基于消息内容hash）",
-    )
-
-    CACHE_EXPIRE_SECONDS: int = Field(
-        default=300,
-        title="缓存过期时间（秒）",
-        description="AI判断结果的缓存有效期",
-    )
 
 
 # 获取配置和插件存储
 config: AIReplyFilterConfig = plugin.get_config(AIReplyFilterConfig)
 store = plugin.store
 
+# 硬编码的常量配置（技术细节，不需要用户配置）
+CACHE_EXPIRE_SECONDS = 300  # 缓存过期时间：5分钟
+AI_TIMEOUT = 10  # AI判断超时时间：10秒
+BLOCK_MODE = 1  # 阻止模式：1=阻止AI响应但保存记录
+
 
 # region: 缓存管理
 
 async def get_cached_decision(message_hash: str) -> Optional[bool]:
     """获取缓存的AI判断结果"""
-    if not config.ENABLE_CACHE:
-        return None
-
     cache_key = f"ai_decision_{message_hash}"
     cached_data = await store.get(store_key=cache_key)
 
@@ -206,7 +180,7 @@ async def get_cached_decision(message_hash: str) -> Optional[bool]:
         decision = data.get("decision")
 
         # 检查缓存是否过期
-        if time.time() - timestamp > config.CACHE_EXPIRE_SECONDS:
+        if time.time() - timestamp > CACHE_EXPIRE_SECONDS:
             core.logger.debug(f"[AI回复过滤器] 缓存已过期: {cache_key}")
             return None
 
@@ -219,9 +193,6 @@ async def get_cached_decision(message_hash: str) -> Optional[bool]:
 
 async def save_decision_to_cache(message_hash: str, decision: bool):
     """保存AI判断结果到缓存"""
-    if not config.ENABLE_CACHE:
-        return
-
     cache_key = f"ai_decision_{message_hash}"
     cache_data = {
         "decision": decision,
@@ -596,13 +567,9 @@ async def handle_user_message(_ctx: AgentCtx, message: ChatMessage) -> MsgSignal
             core.logger.info("[AI回复过滤器] AI判断：需要回复，返回FORCE_TRIGGER强制触发")
             return MsgSignal.FORCE_TRIGGER
         else:
-            # AI判断不需要回复，根据阻止模式决定处理方式
-            if config.BLOCK_MODE == 0:
-                core.logger.info("[AI回复过滤器] AI判断：不需要回复，完全阻止（不保存记录）")
-                return MsgSignal.BLOCK_ALL
-            else:
-                core.logger.info("[AI回复过滤器] AI判断：不需要回复，阻止触发（保存记录）")
-                return MsgSignal.BLOCK_TRIGGER
+            # AI判断不需要回复，阻止触发但保存记录
+            core.logger.info("[AI回复过滤器] AI判断：不需要回复，阻止触发（保存记录）")
+            return MsgSignal.BLOCK_TRIGGER
 
     except Exception as e:
         # 异常情况默认放行并触发，避免阻塞正常对话
