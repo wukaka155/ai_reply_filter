@@ -80,7 +80,7 @@ from nekro_agent.services.plugin.base import NekroPlugin, ConfigBase
 
 # 创建插件实例
 plugin = NekroPlugin(
-    name="AI智能回复过滤器",
+    name="AI自主判断是否回复",
     module_name="ai_reply_filter",
     description="通过AI模型智能分析消息内容，判断是否需要触发回复。支持自动读取频道人设和聊天记录，私聊/群聊独立配置，群组过滤。",
     version="1.2.0",
