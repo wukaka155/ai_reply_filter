@@ -99,7 +99,7 @@ plugin = NekroPlugin(
     name="AI自主判断是否回复",
     module_name="ai_reply_filter",
     description="通过AI模型智能分析消息内容,判断是否需要触发回复。支持自动读取频道人设和聊天记录,私聊/群聊独立配置,群组过滤,完全接管模式,消息合并等待。",
-    version="1.4.1",
+    version="1.5.0",
     author="xiaojiu",
     url="https://github.com/miuzhaii/ai_reply_filter",
     support_adapter=["onebot_v11", "discord", "telegram", "wechatpad", "wxwork"],
@@ -543,6 +543,7 @@ async def get_merge_lock(chat_key: str) -> asyncio.Lock:
 async def handle_with_merge(_ctx: AgentCtx, message: ChatMessage, chat_key: str) -> MsgSignal:
     """
     使用消息合并模式处理消息
+    群聊模式下，收集所有用户的消息一起合并（作为完整对话），但会标注每条消息的发送者
     
     Args:
         _ctx: Agent上下文
@@ -614,12 +615,21 @@ async def process_merged_messages(chat_key: str):
         messages = task_info['messages']
         ctx = task_info['ctx']
 
-        # 合并消息内容
-        merged_texts = [msg.content_text for msg in messages]
-        merged_content = "\n".join(merged_texts)
+        # 🔍 区分用户：为每条消息标注发送者信息
+        merged_lines = []
+        for msg in messages:
+            # 获取发送者信息
+            sender_name = getattr(msg, 'sender_nickname', None) or getattr(msg, 'platform_userid', 'unknown')
+            sender_id = getattr(msg, 'sender_id', '') or getattr(msg, 'platform_userid', '')
+            content = msg.content_text
+            
+            # 格式：[发送者昵称(ID)] 消息内容
+            merged_lines.append(f"[{sender_name}({sender_id})] {content}")
+        
+        merged_content = "\n".join(merged_lines)
 
         core.logger.info(f"[消息合并] 合并了 {len(messages)} 条消息进行处理")
-        core.logger.debug(f"[消息合并] 合并内容: {merged_content[:200]}...")
+        core.logger.debug(f"[消息合并] 合并内容:\n{merged_content[:300]}...")
 
         # 清理任务
         del merge_tasks[chat_key]
@@ -635,7 +645,7 @@ async def process_merged_messages(chat_key: str):
 
                 await message_service.push_system_message(
                     chat_key=chat_key,
-                    agent_messages=f"用户连续发送了 {len(messages)} 条消息,已合并为:\n{merged_content}",
+                    agent_messages=f"群内连续发送了 {len(messages)} 条消息,已合并:\n{merged_content}",
                     trigger_agent=True,
                 )
 
@@ -731,6 +741,11 @@ async def handle_user_message(_ctx: AgentCtx, message: ChatMessage) -> MsgSignal
 
         # 获取 chat_key 用于查询历史消息
         chat_key = getattr(_ctx, "chat_key", "")
+
+        # 🔍 调试日志：输出当前配置值
+        core.logger.info(f"[AI回复过滤器] 📋 配置检查 - ENABLE_MESSAGE_MERGE: {config.ENABLE_MESSAGE_MERGE}")
+        core.logger.info(f"[AI回复过滤器] 📋 配置检查 - MESSAGE_MERGE_WAIT_TIME: {config.MESSAGE_MERGE_WAIT_TIME}")
+        core.logger.info(f"[AI回复过滤器] 📋 配置检查 - MESSAGE_MERGE_MAX_COUNT: {config.MESSAGE_MERGE_MAX_COUNT}")
 
         # 修复: 如果启用消息合并模式,直接收集消息,不立即AI判断
         if config.ENABLE_MESSAGE_MERGE:
