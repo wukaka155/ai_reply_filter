@@ -438,6 +438,7 @@ async def ai_should_reply(message_text: str, chat_key: str = "") -> bool:
             api_key=model_group.API_KEY,
             temperature=0.3,
             max_tokens=32000,
+            stream_mode=True,
         )
 
         content = response.response_content.strip()
